@@ -37,8 +37,6 @@ export class TenantMiddleware implements NestMiddleware {
       );
     }
 
-    // Attach to request so controllers/services can access it without
-    // coupling to raw HTTP headers.
     req.tenantId = tenantId.trim();
     next();
   }
