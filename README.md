@@ -222,13 +222,13 @@ Both files cover the same 24 requests across 7 test groups:
 
 | Group | What it tests |
 |---|---|
-| 1 — Happy Path | 202 response, eventId returned, all event types accepted |
-| 2 — Tenant Isolation | Missing / empty / whitespace header → 400; tenants are isolated |
-| 3 — Request Validation | Every `class-validator` rule fires correctly |
-| 4 — Retry Strategy | `payload.fail=true` → 3 attempts → `status: failed` in DB |
-| 5 — Structured Logging | Triggers both success and failure log chains |
-| 6 — Rich Payloads | Nested objects, arrays, booleans all persist correctly |
-| 7 — Edge Cases | Wrong method, wrong content-type, nonexistent route |
+| 1. Happy Path | 202 response, eventId returned, all event types accepted |
+| 2. Tenant Isolation | Missing / empty / whitespace header → 400; tenants are isolated |
+| 3. Request Validation | Every `class-validator` rule fires correctly |
+| 4. Retry Strategy | `payload.fail=true` → 3 attempts → `status: failed` in DB |
+| 5. Structured Logging | Triggers both success and failure log chains |
+| 6. Rich Payloads | Nested objects, arrays, booleans all persist correctly |
+| 7. Edge Cases | Wrong method, wrong content-type, nonexistent route |
 
 ---
 
@@ -412,6 +412,7 @@ All logs are emitted as JSON lines to stdout. In development they are syntax-hig
   "tenantId": "tenant-abc",
   "attempt": 1,
   "error": "Simulated processing failure (payload.fail = true)",
+  "backoff":4000,
   "timestamp": "2024-01-15T10:00:01.000Z"
 }
 ```
