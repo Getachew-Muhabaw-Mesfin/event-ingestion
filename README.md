@@ -1,98 +1,335 @@
-<p align="center">
-  <a href="http://nestjs.com/" target="blank"><img src="https://nestjs.com/img/logo-small.svg" width="120" alt="Nest Logo" /></a>
-</p>
+# Event Ingestion Service
 
-[circleci-image]: https://img.shields.io/circleci/build/github/nestjs/nest/master?token=abc123def456
-[circleci-url]: https://circleci.com/gh/nestjs/nest
+Tenant-aware event ingestion and async processing system built with NestJS, PostgreSQL (Prisma), and Redis (BullMQ).
 
-  <p align="center">A progressive <a href="http://nodejs.org" target="_blank">Node.js</a> framework for building efficient and scalable server-side applications.</p>
-    <p align="center">
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/v/@nestjs/core.svg" alt="NPM Version" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/l/@nestjs/core.svg" alt="Package License" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/dm/@nestjs/common.svg" alt="NPM Downloads" /></a>
-<a href="https://circleci.com/gh/nestjs/nest" target="_blank"><img src="https://img.shields.io/circleci/build/github/nestjs/nest/master" alt="CircleCI" /></a>
-<a href="https://discord.gg/G7Qnnhy" target="_blank"><img src="https://img.shields.io/badge/discord-online-brightgreen.svg" alt="Discord"/></a>
-<a href="https://opencollective.com/nest#backer" target="_blank"><img src="https://opencollective.com/nest/backers/badge.svg" alt="Backers on Open Collective" /></a>
-<a href="https://opencollective.com/nest#sponsor" target="_blank"><img src="https://opencollective.com/nest/sponsors/badge.svg" alt="Sponsors on Open Collective" /></a>
-  <a href="https://paypal.me/kamilmysliwiec" target="_blank"><img src="https://img.shields.io/badge/Donate-PayPal-ff3f59.svg" alt="Donate us"/></a>
-    <a href="https://opencollective.com/nest#sponsor"  target="_blank"><img src="https://img.shields.io/badge/Support%20us-Open%20Collective-41B883.svg" alt="Support us"></a>
-  <a href="https://twitter.com/nestframework" target="_blank"><img src="https://img.shields.io/twitter/follow/nestframework.svg?style=social&label=Follow" alt="Follow us on Twitter"></a>
-</p>
-  <!--[![Backers on Open Collective](https://opencollective.com/nest/backers/badge.svg)](https://opencollective.com/nest#backer)
-  [![Sponsors on Open Collective](https://opencollective.com/nest/sponsors/badge.svg)](https://opencollective.com/nest#sponsor)-->
+---
 
-## Description
+## Architecture
 
-[Nest](https://github.com/nestjs/nest) framework TypeScript starter repository.
+```
+┌─────────────────────────────────────────────────────────────┐
+│                        HTTP Request                          │
+│              POST /events  +  x-tenant-id header            │
+└─────────────────────────┬───────────────────────────────────┘
+                          │
+                  TenantMiddleware
+                  (validates header, attaches req.tenantId)
+                          │
+                  EventsController
+                  (parse + validate body via ValidationPipe)
+                          │
+                  EventsService
+                  (orchestrate: save + enqueue)
+                  ┌───────┴────────┐
+           EventsRepository    QueueService
+           (Prisma / PG)       (BullMQ enqueue)
+                                    │
+                              Redis Queue
+                              "event-processing"
+                                    │
+                          EventProcessor (Worker)
+                          (consume job, simulate logic,
+                           update DB status, emit logs)
+```
+
+### Module structure
+
+```
+prisma/
+|   migrations/
+|   models/
+|      event.prisma                  #Event model
+|   enum.prisma                     #Enums
+|   schema.prisma                   # Prisma generator and  db type
+|
+src/
+├── main.ts                          # Bootstrap + global middleware
+├── app.module.ts                    # Root module
+│
+├── common/
+│   ├── logging/
+│   │   └── app-logger.service.ts   # Centralized structured JSON logger
+│   ├── middleware/
+│   │   └── tenant.middleware.ts    # x-tenant-id extraction & validation
+│   └── pipes/
+│       └── validation.pipe.ts      # Global ValidationPipe config
+│
+├── prisma/
+│   ├── prisma.service.ts           # PrismaClient wrapper
+│   └── prisma.module.ts            # Global Prisma module
+│
+├── events/
+│   ├── dto/
+│   │   ├── create-event.dto.ts     # Request body DTO (class-validator)
+│   │   └── event-job.payload.ts    # BullMQ job data shape
+|   |   ├── processor/
+|   |       ├── events.processor.ts # BullMQ worker
+│   ├── events.controller.ts        # HTTP layer only
+│   ├── events.service.ts           # Business logic / orchestration
+│   ├── events.repository.ts        # All DB access (always tenant-scoped)
+│   └── events.module.ts            # Feature module
+│
+└── queue/
+    |──config/
+       |──queue.config.ts            # Queue config Atempts, retry and backoff
+    ├── queue.service.ts             # Enqueue helper + retry config
+    └── queue.module.ts              # BullMQ queue registration
+```
+
+---
+
+## Key Design Decisions
+
+| Decision                                   | Rationale                                                                                   |
+| ------------------------------------------ | ------------------------------------------------------------------------------------------- |
+| Repository pattern                         | Keeps Prisma out of the service layer; makes testing trivial with a mock repo               |
+| `tenantId` in every DB call                | Structural guarantee — cross-tenant leakage is impossible at the query level                |
+| 202 Accepted response                      | The job is async; returning 200 would imply synchronous completion                          |
+| `status: failed` only on exhausted retries | During retries the event is still recoverable — marking it failed prematurely is misleading |
+| JSON stdout logging                        | Zero-dependency; compatible with any log aggregator (Datadog, CloudWatch, etc.)             |
+| `removeOnComplete/Fail` limits             | Prevents Redis memory bloat while retaining recent jobs for observability                   |
+
+---
+
+## Getting Started
+
+### Prerequisites
+
+- Node.js 20+
+- Redis
+- pnpm
+- Docker
 
 ## Project setup
 
-```bash
-$ pnpm install
-```
-
-## Compile and run the project
+### 1. Install dependencies
 
 ```bash
-# development
-$ pnpm run start
-
-# watch mode
-$ pnpm run start:dev
-
-# production mode
-$ pnpm run start:prod
+pnpm install
 ```
 
-## Run tests
+### 2. Run Redis using docker, or manually
 
 ```bash
-# unit tests
-$ pnpm run test
-
-# e2e tests
-$ pnpm run test:e2e
-
-# test coverage
-$ pnpm run test:cov
+docker run -d --name redis -p 6379:6379 redis:8.2.5-bookworm
 ```
 
-## Deployment
-
-When you're ready to deploy your NestJS application to production, there are some key steps you can take to ensure it runs as efficiently as possible. Check out the [deployment documentation](https://docs.nestjs.com/deployment) for more information.
-
-If you are looking for a cloud-based platform to deploy your NestJS application, check out [Mau](https://mau.nestjs.com), our official platform for deploying NestJS applications on AWS. Mau makes deployment straightforward and fast, requiring just a few simple steps:
+### 3. Configure environment
 
 ```bash
-$ pnpm install -g @nestjs/mau
-$ mau deploy
+cp .env.example .env
+# Edit .env if your ports differ
 ```
 
-With Mau, you can deploy your application in just a few clicks, allowing you to focus on building features rather than managing infrastructure.
+### 4. Run database migrations
 
-## Resources
+```bash
+npx prisma migrate dev --name init
+npx prisma generate
+```
 
-Check out a few resources that may come in handy when working with NestJS:
+### 5. Start the server
 
-- Visit the [NestJS Documentation](https://docs.nestjs.com) to learn more about the framework.
-- For questions and support, please visit our [Discord channel](https://discord.gg/G7Qnnhy).
-- To dive deeper and get more hands-on experience, check out our official video [courses](https://courses.nestjs.com/).
-- Deploy your application to AWS with the help of [NestJS Mau](https://mau.nestjs.com) in just a few clicks.
-- Visualize your application graph and interact with the NestJS application in real-time using [NestJS Devtools](https://devtools.nestjs.com).
-- Need help with your project (part-time to full-time)? Check out our official [enterprise support](https://enterprise.nestjs.com).
-- To stay in the loop and get updates, follow us on [X](https://x.com/nestframework) and [LinkedIn](https://linkedin.com/company/nestjs).
-- Looking for a job, or have a job to offer? Check out our official [Jobs board](https://jobs.nestjs.com).
+```bash
+# Development (watch mode)
+pnpm run start:dev
 
-## Support
+# Production
+pnpm run build && npm start
+```
 
-Nest is an MIT-licensed open source project. It can grow thanks to the sponsors and support by the amazing backers. If you'd like to join them, please [read more here](https://docs.nestjs.com/support).
+---
 
-## Stay in touch
+## API Reference
 
-- Author - [Kamil Myśliwiec](https://twitter.com/kammysliwiec)
-- Website - [https://nestjs.com](https://nestjs.com/)
-- Twitter - [@nestframework](https://twitter.com/nestframework)
+### POST /events
 
-## License
+Ingest a new event for async processing.
 
-Nest is [MIT licensed](https://github.com/nestjs/nest/blob/master/LICENSE).
+**Headers**
+
+| Header         | Required | Description        |
+| -------------- | -------- | ------------------ |
+| `x-tenant-id`  | ✅       | Tenant identifier  |
+| `Content-Type` | ✅       | `application/json` |
+
+**Body**
+
+```json
+{
+  "type": "user_action",
+  "payload": { "action": "clicked_button" }
+}
+```
+
+**Response — 202 Accepted**
+
+```json
+{
+  "eventId": "550e8400-e29b-41d4-a716-446655440000",
+  "status": "pending",
+  "message": "Event accepted for processing"
+}
+```
+
+---
+
+## Example Requests
+
+### Success flow
+
+```bash
+curl -X POST http://localhost:3000/events \
+  -H "Content-Type: application/json" \
+  -H "x-tenant-id: tenant-abc" \
+  -d '{"type":"user_action","payload":{"action":"clicked_button"}}'
+```
+
+### Trigger simulated failure + retries
+
+```bash
+curl -X POST http://localhost:3000/events \
+  -H "Content-Type: application/json" \
+  -H "x-tenant-id: tenant-abc" \
+  -d '{"type":"user_action","payload":{"fail":true}}'
+```
+
+### Missing tenant header → 400
+
+```bash
+curl -X POST http://localhost:3000/events \
+  -H "Content-Type: application/json" \
+  -d '{"type":"user_action","payload":{}}'
+```
+
+### Invalid body → 400
+
+```bash
+curl -X POST http://localhost:3000/events \
+  -H "x-tenant-id: tenant-abc" \
+  -H "Content-Type: application/json" \
+  -d '{"type":123}'
+```
+
+---
+
+## Log Examples
+
+All logs are JSON lines written to stdout.
+
+### Event received
+
+```json
+{
+  "level": "info",
+  "message": "job.received",
+  "event": "received",
+  "jobId": "N/A",
+  "eventId": "550e8400-e29b-41d4-a716-446655440000",
+  "tenantId": "tenant-abc",
+  "attempt": 0,
+  "timestamp": "2024-01-15T10:00:00.000Z"
+}
+```
+
+### Processing started
+
+```json
+{
+  "level": "info",
+  "message": "job.processing_started",
+  "event": "processing_started",
+  "jobId": "42",
+  "eventId": "550e8400-e29b-41d4-a716-446655440000",
+  "tenantId": "tenant-abc",
+  "attempt": 1,
+  "timestamp": "2024-01-15T10:00:00.120Z"
+}
+```
+
+### Processing success
+
+```json
+{
+  "level": "info",
+  "message": "job.processing_success",
+  "event": "processing_success",
+  "jobId": "42",
+  "eventId": "550e8400-e29b-41d4-a716-446655440000",
+  "tenantId": "tenant-abc",
+  "attempt": 1,
+  "timestamp": "2024-01-15T10:00:00.175Z"
+}
+```
+
+### Retry attempt (transient failure)
+
+```json
+{
+  "level": "warn",
+  "message": "job.retry_attempt",
+  "event": "retry_attempt",
+  "jobId": "43",
+  "eventId": "661f9511-f30c-52e5-b827-557766551111",
+  "tenantId": "tenant-abc",
+  "attempt": 1,
+  "error": "Simulated processing failure (payload.fail = true)",
+  "timestamp": "2024-01-15T10:00:01.000Z"
+}
+```
+
+### Permanent failure (all retries exhausted)
+
+```json
+{
+  "level": "error",
+  "message": "job.processing_failed",
+  "event": "processing_failed",
+  "jobId": "43",
+  "eventId": "661f9511-f30c-52e5-b827-557766551111",
+  "tenantId": "tenant-abc",
+  "attempt": 3,
+  "error": "Simulated processing failure (payload.fail = true)",
+  "timestamp": "2024-01-15T10:00:07.000Z"
+}
+```
+
+---
+
+## Retry Strategy
+
+| Attempt | Delay     |
+| ------- | --------- |
+| 1       | immediate |
+| 2       | ~2 s      |
+| 3       | ~4 s      |
+
+Configured via BullMQ `backoff: { type: 'exponential', delay: 2000 }` in `queue.config.ts`.
+
+---
+
+## Tenant Isolation
+
+Isolation is enforced at **two layers**:
+
+1. **Middleware** — `TenantMiddleware` rejects any request without a valid `x-tenant-id` header before it reaches the controller.
+2. **Repository** — Every `EventsRepository` method includes `tenantId` in the `WHERE` clause. Even if a caller somehow passed the wrong `tenantId`, the query returns no rows.
+
+The two-layer approach means a bug in one layer is caught by the other.
+
+---
+
+## Edge Cases & How They Are Handled
+
+| Scenario                                      | Handling                                                                                                   |
+| --------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| Missing `x-tenant-id`                         | `TenantMiddleware` → 400 Bad Request                                                                       |
+| Invalid body (wrong types, extra fields)      | Global `ValidationPipe` → 400 with field-level errors                                                      |
+| Event not found in processor (wrong tenant)   | Processor throws → job fails immediately (no retries)                                                      |
+| Crash between DB write and queue push         | Event stays `pending`. **Mitigation**: add a cron job that re-queues `pending` events older than N seconds |
+| All retries exhausted                         | `onFailed` hook writes `EventStatus.failed` to DB and logs `processing_failed`                             |
+| Redis unavailable                             | BullMQ `enqueue` throws; NestJS returns 500. Consider a circuit-breaker or fallback queue for production   |
+| PostgreSQL unavailable                        | Prisma throws; NestJS returns 500. Standard DB HA / connection pooling (PgBouncer) applies                 |
+| Duplicate job delivery (BullMQ at-least-once) | Processor is idempotent — updating a `processed` event to `processed` again is a no-op                     |
+
+---
