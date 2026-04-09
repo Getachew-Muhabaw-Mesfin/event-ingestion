@@ -99,6 +99,7 @@ export class EventProcessor extends WorkerHost {
   async onFailed(job: Job<EventJobPayload>, error: Error): Promise<void> {
     const { eventId, tenantId } = job.data;
     const isRetryExhausted = job.attemptsMade >= (job.opts.attempts ?? 1);
+    const attemptsMade = job.attemptsMade;
 
     if (isRetryExhausted) {
       await this.eventsRepository.updateStatus(
@@ -116,6 +117,19 @@ export class EventProcessor extends WorkerHost {
         error: error.message,
       });
     } else {
+      const backoff = job.opts.backoff;
+      let baseDelay = 0;
+
+      if (typeof backoff === 'number') {
+        baseDelay = backoff;
+      } else if (backoff && typeof backoff === 'object' && 'delay' in backoff) {
+        baseDelay = backoff.delay as number;
+      }
+
+      const nextDelay =
+        backoff && typeof backoff === 'object' && backoff.type === 'exponential'
+          ? baseDelay * Math.pow(2, attemptsMade)
+          : baseDelay;
       this.logger.logJobEvent({
         event: 'retry_attempt',
         jobId: String(job.id),
@@ -123,7 +137,7 @@ export class EventProcessor extends WorkerHost {
         tenantId,
         attempt: job.attemptsMade,
         error: error.message,
-        backoff: job.opts.backoff,
+        backoff: nextDelay,
       });
     }
   }
@@ -134,7 +148,6 @@ export class EventProcessor extends WorkerHost {
     type: string,
     payload: Record<string, unknown>,
   ): Promise<void> {
-    // Simulate async I/O (e.g. calling a downstream service)
     await new Promise((r) => setTimeout(r, 50));
 
     switch (type) {

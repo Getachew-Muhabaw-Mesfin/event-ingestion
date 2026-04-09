@@ -7,7 +7,6 @@ import { Request, Response, NextFunction } from 'express';
 
 export const TENANT_HEADER = 'x-tenant-id';
 
-// Extend Express Request to carry tenantId throughout the request lifecycle
 declare global {
   // eslint-disable-next-line @typescript-eslint/no-namespace
   namespace Express {

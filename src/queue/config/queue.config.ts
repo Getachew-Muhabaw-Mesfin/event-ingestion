@@ -12,7 +12,7 @@ import type { DefaultJobOptions } from 'bullmq';
  *   attempt 3 → 4 s delay
  */
 export const DEFAULT_JOB_OPTIONS: DefaultJobOptions = {
-  attempts: 3,
+  attempts: 5,
   backoff: {
     type: 'exponential',
     delay: 2000,
