@@ -16,6 +16,7 @@ async function bootstrap() {
   app.useGlobalPipes(globalValidationPipe);
 
   app.enableShutdownHooks();
+  app.setGlobalPrefix('api/v1');
 
   const port = process.env.PORT ?? 3000;
   await app.listen(port);

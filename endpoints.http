@@ -1,0 +1,375 @@
+### =============================================================
+### Event Ingestion Service — REST Client Test Suite
+### Install: VS Code "REST Client" extension (humao.rest-client)
+### Run: click "Send Request" above any ### block
+### =============================================================
+
+@baseUrl = http://localhost:3000/api/v1
+@validTenant = tenant-abc
+@anotherTenant = tenant-xyz
+
+
+### =============================================================
+### 1. HAPPY PATH — successful event ingestion + processing
+###    Assessment: validates body, extracts tenantId, saves to DB,
+###    pushes job, processor marks status = processed
+### =============================================================
+
+### [1a] Basic user_action event → expect 202 + eventId
+POST {{baseUrl}}/events
+Content-Type: application/json
+x-tenant-id: {{validTenant}}
+
+{
+  "type": "user_action",
+  "payload": {
+    "action": "clicked_button"
+  }
+}
+
+###
+
+### [1b] system_event type → expect 202 (processor no-op branch)
+POST {{baseUrl}}/events
+Content-Type: application/json
+x-tenant-id: {{validTenant}}
+
+{
+  "type": "system_event",
+  "payload": {
+    "source": "cron",
+    "trigger": "daily_sync"
+  }
+}
+
+###
+
+### [1c] Unknown type → expect 202, processor logs warning but succeeds
+POST {{baseUrl}}/events
+Content-Type: application/json
+x-tenant-id: {{validTenant}}
+
+{
+  "type": "unknown_custom_type",
+  "payload": {
+    "custom": true
+  }
+}
+
+
+### =============================================================
+### 2. TENANT ISOLATION (CRITICAL)
+###    Assessment: tenantId extracted from header, validated,
+###    all DB queries scoped to tenant
+### =============================================================
+
+### [2a] Different tenant — creates isolated record, no cross-tenant bleed
+POST {{baseUrl}}/events
+Content-Type: application/json
+x-tenant-id: {{anotherTenant}}
+
+{
+  "type": "user_action",
+  "payload": {
+    "action": "logged_in",
+    "userId": "u_999"
+  }
+}
+
+###
+
+### [2b] Missing x-tenant-id header → expect 400 Bad Request
+POST {{baseUrl}}/events
+Content-Type: application/json
+
+{
+  "type": "user_action",
+  "payload": {
+    "action": "clicked_button"
+  }
+}
+
+###
+
+### [2c] Empty x-tenant-id header → expect 400 Bad Request
+POST {{baseUrl}}/events
+Content-Type: application/json
+x-tenant-id:
+
+{
+  "type": "user_action",
+  "payload": {
+    "action": "clicked_button"
+  }
+}
+
+###
+
+### [2d] Whitespace-only tenant → expect 400 Bad Request
+POST {{baseUrl}}/events
+Content-Type: application/json
+x-tenant-id:    
+
+{
+  "type": "user_action",
+  "payload": {
+    "action": "clicked_button"
+  }
+}
+
+
+### =============================================================
+### 3. REQUEST VALIDATION (class-validator)
+###    Assessment: ValidationPipe with whitelist + forbidNonWhitelisted
+### =============================================================
+
+### [3a] Missing `type` field → expect 400 with field error
+POST {{baseUrl}}/events
+Content-Type: application/json
+x-tenant-id: {{validTenant}}
+
+{
+  "payload": {
+    "action": "clicked_button"
+  }
+}
+
+###
+
+### [3b] Missing `payload` field → expect 400 with field error
+POST {{baseUrl}}/events
+Content-Type: application/json
+x-tenant-id: {{validTenant}}
+
+{
+  "type": "user_action"
+}
+
+###
+
+### [3c] `type` is not a string → expect 400
+POST {{baseUrl}}/events
+Content-Type: application/json
+x-tenant-id: {{validTenant}}
+
+{
+  "type": 123,
+  "payload": {}
+}
+
+###
+
+### [3d] `payload` is not an object (string instead) → expect 400
+POST {{baseUrl}}/events
+Content-Type: application/json
+x-tenant-id: {{validTenant}}
+
+{
+  "type": "user_action",
+  "payload": "this_should_be_an_object"
+}
+
+###
+
+### [3e] Extra unknown field → expect 400 (forbidNonWhitelisted)
+POST {{baseUrl}}/events
+Content-Type: application/json
+x-tenant-id: {{validTenant}}
+
+{
+  "type": "user_action",
+  "payload": { "action": "test" },
+  "unknownField": "should_be_rejected"
+}
+
+###
+
+### [3f] Empty body → expect 400
+POST {{baseUrl}}/events
+Content-Type: application/json
+x-tenant-id: {{validTenant}}
+
+{}
+
+###
+
+### [3g] Empty type string → expect 400 (@IsNotEmpty)
+POST {{baseUrl}}/events
+Content-Type: application/json
+x-tenant-id: {{validTenant}}
+
+{
+  "type": "",
+  "payload": { "action": "test" }
+}
+
+
+### =============================================================
+### 4. RETRY STRATEGY — exponential backoff, 3 attempts
+###    Assessment: payload.fail = true triggers simulated failure
+###    Watch logs: retry_attempt × 2 → processing_failed
+###    DB status transitions: pending → failed
+### =============================================================
+
+### [4a] Force failure — triggers 3 attempts then marks status=failed
+###      Check logs for: retry_attempt (×2) then processing_failed
+POST {{baseUrl}}/events
+Content-Type: application/json
+x-tenant-id: {{validTenant}}
+
+{
+  "type": "user_action",
+  "payload": {
+    "action": "will_fail",
+    "fail": true
+  }
+}
+
+###
+
+### [4b] Fail on tenant-xyz — same retry flow, isolated to that tenant
+POST {{baseUrl}}/events
+Content-Type: application/json
+x-tenant-id: {{anotherTenant}}
+
+{
+  "type": "system_event",
+  "payload": {
+    "fail": true,
+    "reason": "downstream_unavailable"
+  }
+}
+
+
+### =============================================================
+### 5. STRUCTURED LOGGING VERIFICATION
+###    Assessment: every job lifecycle must emit JSON log events
+###    Run any request above then inspect stdout for these events:
+###
+###    SUCCESS FLOW logs to watch:
+###      { "event": "received",            "attempt": 0 }
+###      { "event": "processing_started",  "attempt": 1 }
+###      { "event": "processing_success",  "attempt": 1 }
+###
+###    FAILURE FLOW logs to watch:
+###      { "event": "received",            "attempt": 0 }
+###      { "event": "processing_started",  "attempt": 1 }
+###      { "event": "retry_attempt",       "attempt": 1 }
+###      { "event": "processing_started",  "attempt": 2 }
+###      { "event": "retry_attempt",       "attempt": 2 }
+###      { "event": "processing_started",  "attempt": 3 }
+###      { "event": "processing_failed",   "attempt": 3 }
+### =============================================================
+
+### [5a] Trigger full success log chain
+POST {{baseUrl}}/events
+Content-Type: application/json
+x-tenant-id: {{validTenant}}
+
+{
+  "type": "user_action",
+  "payload": {
+    "action": "log_chain_test"
+  }
+}
+
+###
+
+### [5b] Trigger full failure + retry log chain
+POST {{baseUrl}}/events
+Content-Type: application/json
+x-tenant-id: {{validTenant}}
+
+{
+  "type": "user_action",
+  "payload": {
+    "fail": true,
+    "action": "log_retry_chain_test"
+  }
+}
+
+
+### =============================================================
+### 6. RICH PAYLOAD VARIANTS
+###    Assessment: payload is free-form JSON (Record<string,unknown>)
+### =============================================================
+
+### [6a] Nested payload
+POST {{baseUrl}}/events
+Content-Type: application/json
+x-tenant-id: {{validTenant}}
+
+{
+  "type": "user_action",
+  "payload": {
+    "action": "form_submitted",
+    "user": {
+      "id": "u_123",
+      "plan": "pro"
+    },
+    "form": {
+      "id": "onboarding",
+      "step": 3
+    },
+    "timestamp": "2024-01-15T10:00:00Z"
+  }
+}
+
+###
+
+### [6b] Minimal payload (empty object is valid)
+POST {{baseUrl}}/events
+Content-Type: application/json
+x-tenant-id: {{validTenant}}
+
+{
+  "type": "heartbeat",
+  "payload": {}
+}
+
+
+### =============================================================
+### 7. EDGE CASES
+### =============================================================
+
+### [7a] Very long tenantId (should still work — no length constraint)
+POST {{baseUrl}}/events
+Content-Type: application/json
+x-tenant-id: tenant-org-acme-corp-division-east-team-backend-prod
+
+{
+  "type": "user_action",
+  "payload": { "action": "test" }
+}
+
+###
+
+### [7b] Numeric values in payload (JSON types preserved in DB)
+POST {{baseUrl}}/events
+Content-Type: application/json
+x-tenant-id: {{validTenant}}
+
+{
+  "type": "analytics",
+  "payload": {
+    "score": 98.6,
+    "count": 42,
+    "active": true,
+    "tags": ["a", "b", "c"]
+  }
+}
+
+###
+
+### [7c] Wrong HTTP method → expect 404
+GET {{baseUrl}}/events
+x-tenant-id: {{validTenant}}
+
+###
+
+### [7d] Wrong Content-Type (no JSON body parse) → expect 400
+POST {{baseUrl}}/events
+Content-Type: text/plain
+x-tenant-id: {{validTenant}}
+
+type=user_action

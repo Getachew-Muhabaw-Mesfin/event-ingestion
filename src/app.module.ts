@@ -11,20 +11,9 @@ import { BullModule } from '@nestjs/bullmq';
 import { EventsModule } from './events/events.module';
 import { TenantMiddleware } from './common/middleware/tenant.middleware';
 
-/**
- * AppModule
- *
- * - ConfigModule is global so env vars are available everywhere via ConfigService.
- * - BullModule.forRootAsync sets the shared Redis connection for all queues.
- * - TenantMiddleware is applied to all routes; add exclusions here if needed
- *   (e.g. health-check endpoints).
- */
 @Module({
   imports: [
     ConfigModule.forRoot({ isGlobal: true }),
-
-    // Shared Redis connection — all BullModule.registerQueueAsync calls
-    // inherit this unless they provide their own `connection` override.
     BullModule.forRootAsync({
       useFactory: (config: ConfigService) => ({
         connection: {
@@ -44,6 +33,6 @@ export class AppModule implements NestModule {
   configure(consumer: MiddlewareConsumer): void {
     consumer
       .apply(TenantMiddleware)
-      .forRoutes({ path: '*', method: RequestMethod.ALL });
+      .forRoutes({ path: '/*path', method: RequestMethod.ALL });
   }
 }

@@ -42,14 +42,13 @@ export class EventProcessor extends WorkerHost {
 
     // ── Tenant isolation ──────────────────────────────────────────────────
     // Fetch the event scoped to tenantId; null means the event either does
-    // not exist or belongs to a different tenant (we treat both the same).
+    // not exist or belongs to a different tenant (I treat both the same).
     const event = await this.eventsRepository.findByIdAndTenant(
       eventId,
       tenantId,
     );
 
     if (!event) {
-      // Permanent failure — no retry makes sense for missing/mismatched tenant
       this.logger.logJobEvent({
         event: 'processing_failed',
         jobId: String(job.id),
@@ -58,8 +57,7 @@ export class EventProcessor extends WorkerHost {
         attempt,
         error: 'Event not found or tenant mismatch',
       });
-      // Throwing here triggers BullMQ retry logic; returning silently would
-      // mark the job as completed which would hide the problem.
+
       throw new Error(
         'Event not found or tenant mismatch — aborting without retry',
       );
@@ -74,12 +72,8 @@ export class EventProcessor extends WorkerHost {
       throw new Error('Simulated processing failure (payload.fail = true)');
     }
 
-    // ── Business logic dispatch ───────────────────────────────────────────
-    // Real systems would dispatch to a handler registry keyed by `type`.
-    // Here we simulate per-type work.
     await this.handleByType(type, event.payload as Record<string, unknown>);
 
-    // ── Mark success ──────────────────────────────────────────────────────
     await this.eventsRepository.updateStatus(
       eventId,
       tenantId,
@@ -129,6 +123,7 @@ export class EventProcessor extends WorkerHost {
         tenantId,
         attempt: job.attemptsMade,
         error: error.message,
+        backoff: job.opts.backoff,
       });
     }
   }

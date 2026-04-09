@@ -5,15 +5,6 @@ import { EVENT_QUEUE_NAME, QueueService } from './queue.service';
 import { AppLogger } from '../common/logging/app-logger.service';
 import { DEFAULT_JOB_OPTIONS } from './config/queue.config';
 
-/**
- * QueueModule
- *
- * - Registers the BullMQ queue with Redis connection pulled from config.
- * - Exports QueueService so EventsModule can inject it.
- *
- * The Redis connection is intentionally shared via BullModule.forRootAsync
- * so all queues reuse the same connection pool.
- */
 @Module({
   imports: [
     BullModule.registerQueueAsync({
@@ -29,6 +20,6 @@ import { DEFAULT_JOB_OPTIONS } from './config/queue.config';
     }),
   ],
   providers: [QueueService, AppLogger],
-  exports: [QueueService],
+  exports: [QueueService, BullModule],
 })
 export class QueueModule {}

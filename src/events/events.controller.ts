@@ -17,7 +17,6 @@ import { CreateEventDto } from './dto/create-event.dto';
  * - Parse / validate the request body via the global ValidationPipe
  * - Read tenantId from the request object (already set by TenantMiddleware)
  * - Delegate to EventsService
- * - Return a consistent HTTP response shape
  *
  * No business logic belongs here.
  */
@@ -26,7 +25,7 @@ export class EventsController {
   constructor(private readonly eventsService: EventsService) {}
 
   @Post()
-  @HttpCode(HttpStatus.ACCEPTED) // 202: accepted for async processing
+  @HttpCode(HttpStatus.ACCEPTED)
   async create(@Req() req: Request, @Body() dto: CreateEventDto) {
     const event = await this.eventsService.ingest(req.tenantId, dto);
     return {
