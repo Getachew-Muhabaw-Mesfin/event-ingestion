@@ -1,0 +1,14 @@
+model Event {
+  id        String      @id @default(uuid())
+  tenantId  String
+  type      String
+  payload   Json
+  status    EventStatus @default(pending)
+  createdAt DateTime    @default(now())
+  updatedAt DateTime    @updatedAt
+
+  @@index([tenantId])
+  @@index([status])
+  @@index([tenantId, status])
+  @@map("events")
+}
